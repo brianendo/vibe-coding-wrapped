@@ -1,0 +1,9 @@
+{
+  "name": "vibe-coding-wrapped",
+  "description": "Spotify Wrapped for your AI coding sessions. Analyzes Claude Code and Codex history to measure how much you're directing vs vibe coding.",
+  "version": "0.1.0",
+  "author": {
+    "name": "Brian Endo",
+    "url": "https://github.com/brianendo"
+  }
+}
