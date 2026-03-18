@@ -21,7 +21,22 @@ Spotify Wrapped for your AI coding sessions. Analyzes your Claude Code and Codex
 - Per-project breakdown
 - Actionable suggestions for improvement
 
-## Quick start
+## Install (Claude Code plugin)
+
+```bash
+# Add marketplace and install (one-time)
+/plugin marketplace add brianendo/vibe-coding-wrapped
+/plugin install vibe-coding-wrapped@vibe-coding-wrapped
+```
+
+Then from any project:
+```
+/vibe-wrapped    # Quick analysis with AI interpretation
+/vibe-deep       # Deep conversation analysis (both sides)
+/vibe-card       # Generate shareable card for X/Twitter
+```
+
+## Standalone (no plugin)
 
 ```bash
 # Quick analysis (runs in seconds)
