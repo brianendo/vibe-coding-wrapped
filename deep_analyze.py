@@ -359,6 +359,78 @@ def analyze_your_patterns(all_pairs):
         "create_to_own_ratio": round(creates / max(1, self_did), 1),
     }
 
+    # --- Specificity analysis ---
+    # The real issue isn't framing words, it's whether messages contain constraints
+    constraint_words = ["don't", "dont", "not", "instead", "must", "should not",
+                        "never", "always", "make sure", "specifically", "exactly",
+                        "only if", "constraint", "require", "limit"]
+    msgs_with_constraints = sum(1 for l in lowers if any(w in l for w in constraint_words))
+    msgs_with_file_refs = sum(1 for t in user_texts if re.search(r'[\w/]+\.\w{1,4}', t) and '/' in t)
+    msgs_with_code = sum(1 for t in user_texts if '`' in t or '[Pasted' in t)
+    msgs_with_reasoning = sum(1 for t in user_texts if any(w in t.lower() for w in
+        ["because", "reason", "since", "so that", "the goal is", "the point is", "what i mean"]))
+    msgs_with_negation = sum(1 for l in lowers if any(w in l for w in
+        ["don't want", "dont want", "not like", "avoid", "skip", "without", "no need"]))
+
+    patterns["specificity"] = {
+        "msgs_with_constraints": msgs_with_constraints,
+        "msgs_with_file_refs": msgs_with_file_refs,
+        "msgs_with_code_or_paste": msgs_with_code,
+        "msgs_with_reasoning": msgs_with_reasoning,
+        "msgs_with_negation": msgs_with_negation,
+        "total_messages": len(user_texts),
+        "constraint_pct": round(msgs_with_constraints * 100 / len(user_texts), 1) if user_texts else 0,
+        "specificity_score": round(
+            (msgs_with_constraints + msgs_with_file_refs + msgs_with_code +
+             msgs_with_reasoning + msgs_with_negation) * 100 / (len(user_texts) * 5), 1
+        ) if user_texts else 0,
+    }
+
+    # --- Session opener quality ---
+    # Does the first message of a conversation set clear direction?
+    openers = []
+    # Group into sessions by looking for long gaps
+    prev_ts = None
+    for pair in all_pairs:
+        user_text = pair["user"]["text"]
+        # We don't have timestamps in pairs, so approximate by checking if it
+        # looks like a session opener (long detailed first message)
+        pass
+
+    # Analyze short messages for what they're missing
+    short_msgs = [t for t in user_texts if len(t) < 50]
+    short_with_constraint = sum(1 for t in short_msgs if any(w in t.lower() for w in constraint_words))
+    short_with_context = sum(1 for t in short_msgs if any(w in t.lower() for w in
+        ["because", "file", "function", "class", "component", "endpoint", "table"]))
+
+    patterns["short_message_quality"] = {
+        "total_short": len(short_msgs),
+        "short_with_any_constraint": short_with_constraint,
+        "short_with_context": short_with_context,
+        "bare_short_pct": round((len(short_msgs) - short_with_constraint - short_with_context)
+                                * 100 / max(1, len(short_msgs)), 1),
+    }
+
+    # --- Frustration → Action analysis ---
+    # When you say "ugh" or express frustration, what do you do next?
+    frustration_words = ["ugh", "not working", "broken", "stuck", "why is", "why isn't", "still not"]
+    frustration_followed_by = Counter()
+    for i in range(len(all_pairs) - 1):
+        if any(w in all_pairs[i]["user"]["text"].lower() for w in frustration_words):
+            next_text = all_pairs[i + 1]["user"]["text"].lower().strip()
+            clean = re.sub(r"[!.,?'\s]+$", "", next_text)
+            if clean in REACTIVE_WORDS or len(next_text) < 8:
+                frustration_followed_by["accepts_next"] += 1
+            elif any(re.match(p, next_text) for p in CORRECTION_PATTERNS):
+                frustration_followed_by["corrects_next"] += 1
+            elif "?" in next_text:
+                frustration_followed_by["asks_question"] += 1
+            elif len(next_text) > 100:
+                frustration_followed_by["gives_detailed_redirect"] += 1
+            else:
+                frustration_followed_by["continues"] += 1
+    patterns["frustration_response"] = dict(frustration_followed_by)
+
     return patterns
 
 
@@ -407,20 +479,53 @@ def generate_insights(dynamics, patterns):
                          "adding specific input, asking a question, or stating a preference.",
         })
 
-    # Framing style
-    framing = patterns.get("framing_style", {})
-    possibility = framing.get("possibility_framing", {}).get("count", 0)
-    command = framing.get("direct_command", {}).get("count", 0)
-    intent = framing.get("intent_statement", {}).get("count", 0)
-    if possibility > (command + intent) * 2:
+    # Specificity insight
+    specificity = patterns.get("specificity", {})
+    constraint_pct = specificity.get("constraint_pct", 0)
+    if constraint_pct < 10:
         insights.append({
-            "type": "personality",
-            "title": "Possibility Framer",
-            "insight": f"You say 'is there a way to...' {possibility} times vs direct commands {command} times. "
-                      f"You frame problems as open questions, which gives AI latitude to choose the approach.",
-            "suggestion": "Swap 'is there a way to X?' for 'I want X. Here's how I think it should work: ...' "
-                         "Same curiosity, but you set the frame instead of asking AI to set it.",
+            "type": "warning",
+            "title": "Low Specificity",
+            "insight": f"Only {constraint_pct}% of your messages include constraints (don't, must, "
+                      f"specifically, etc). {specificity.get('msgs_with_reasoning', 0)} messages explain "
+                      f"your reasoning. {specificity.get('msgs_with_negation', 0)} say what you DON'T want. "
+                      f"Without constraints, AI fills the gap with its own judgment.",
+            "suggestion": "Add constraints to important messages. What you DON'T want is as valuable as "
+                         "what you do. 'Add auth' vs 'Add auth — don't use a third party, keep it simple, "
+                         "JWT only' produces very different results. The framing word doesn't matter — "
+                         "the specificity does.",
         })
+
+    # Short message quality
+    short_quality = patterns.get("short_message_quality", {})
+    bare_pct = short_quality.get("bare_short_pct", 0)
+    if bare_pct > 80:
+        insights.append({
+            "type": "pattern",
+            "title": "Bare Short Messages",
+            "insight": f"{bare_pct}% of your short messages (<50 chars) contain no constraints, "
+                      f"file references, or context. These are effectively blank checks for AI.",
+            "suggestion": "Short is fine if specific. 'fix the auth bug in api/routes.ts' is 40 chars "
+                         "but highly directed. 'fix the bug' is 12 chars and gives AI total freedom.",
+        })
+
+    # Frustration response
+    frustration = patterns.get("frustration_response", {})
+    if frustration:
+        accepts = frustration.get("accepts_next", 0)
+        redirects = frustration.get("gives_detailed_redirect", 0)
+        total_frust = sum(frustration.values())
+        if total_frust > 5 and accepts > redirects:
+            insights.append({
+                "type": "pattern",
+                "title": "Frustration Without Redirect",
+                "insight": f"When you express frustration, you accept the next AI output {accepts} times "
+                          f"but give a detailed redirect only {redirects} times. Frustration is your "
+                          f"signal that something's wrong — but you're not using it to change direction.",
+                "suggestion": "When you feel 'ugh', pause and write what's actually wrong. Don't accept "
+                             "the next output on autopilot. That frustration means AI went somewhere you "
+                             "didn't want — redirect it.",
+            })
 
     # Delegation ratio
     delegation = patterns.get("delegation", {})
@@ -546,6 +651,36 @@ def generate_deep_wrapped(dynamics, patterns, insights, projects_analyzed, timef
         for style, data in framing.items():
             label = style.replace("_", " ").title()
             lines.append(f"- {label}: **{data.get('count', 0)}** ({data.get('example', '')})")
+        lines.append("")
+
+    # Specificity
+    spec = patterns.get("specificity", {})
+    if spec:
+        lines.append("## Message Specificity")
+        lines.append(f"- Messages with constraints: **{spec.get('msgs_with_constraints', 0)}** ({spec.get('constraint_pct', 0)}%)")
+        lines.append(f"- Messages with file/code refs: **{spec.get('msgs_with_file_refs', 0)}**")
+        lines.append(f"- Messages with pasted code: **{spec.get('msgs_with_code_or_paste', 0)}**")
+        lines.append(f"- Messages explaining reasoning: **{spec.get('msgs_with_reasoning', 0)}**")
+        lines.append(f"- Messages saying what you DON'T want: **{spec.get('msgs_with_negation', 0)}**")
+        lines.append("")
+
+    # Short message quality
+    smq = patterns.get("short_message_quality", {})
+    if smq:
+        lines.append("## Short Message Quality")
+        lines.append(f"- Total short messages (<50 chars): **{smq.get('total_short', 0)}**")
+        lines.append(f"- Short with any constraint: **{smq.get('short_with_any_constraint', 0)}**")
+        lines.append(f"- Short with context (file, function, etc): **{smq.get('short_with_context', 0)}**")
+        lines.append(f"- Bare short messages (no specifics): **{smq.get('bare_short_pct', 0)}%**")
+        lines.append("")
+
+    # Frustration response
+    frust = patterns.get("frustration_response", {})
+    if frust:
+        lines.append("## What Happens After Frustration")
+        for action, count in sorted(frust.items(), key=lambda x: x[1], reverse=True):
+            label = action.replace("_", " ")
+            lines.append(f"- {label}: **{count}**")
         lines.append("")
 
     # Per-project breakdown
